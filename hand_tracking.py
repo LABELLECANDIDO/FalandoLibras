@@ -21,6 +21,25 @@ import mediapipe as mp
 import time
 import os
 import sys
+import joblib
+
+model = joblib.load("modelo.pkl")
+#######################################################
+import csv
+
+def salvar_dados(pts, letra):
+    linha = []
+
+    for i in range(21):
+        x, y = pts[i]
+        linha.extend([x, y])
+
+    linha.append(letra)
+
+    with open("dataset.csv", "a", newline="") as f:
+        writer = csv.writer(f)
+        writer.writerow(linha)
+########################################################
 
 # ── Detecta versão da API ─────────────────────
 mp_version = tuple(int(x) for x in mp.__version__.split(".")[:2])
@@ -121,18 +140,8 @@ def run_old_api(cap, state):
                 draw_hand(frame, pts, state["thickness"], state["debug"])
 
                 # DETECÇÃO DE GESTO
-                if is_hand_open(pts):
-                    texto = "MAO ABERTA"
-
-                elif is_hand_closed(pts):
-                    texto = "MAO FECHADA"
-
-                elif is_index_up(pts):
-                    texto = "INDICADOR"
-
-                else:
-                    texto = ""
-
+                texto = prever_letra(pts)
+            
                 # MOSTRAR TEXTO
                 if texto:
                     x, y = pts[0]
@@ -186,6 +195,7 @@ def run_new_api(cap, state):
         min_hand_presence_confidence=0.5,
         min_tracking_confidence=0.5,
     )
+
     prev_time = time.time()
 
     with mp_vision.HandLandmarker.create_from_options(options) as detector:
@@ -193,58 +203,69 @@ def run_new_api(cap, state):
             ret, frame = cap.read()
             if not ret:
                 continue
+
             frame = cv2.flip(frame, 1)
             h, w = frame.shape[:2]
 
-            mp_img = mp.Image(image_format=mp.ImageFormat.SRGB,
-                              data=cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
+            mp_img = mp.Image(
+                image_format=mp.ImageFormat.SRGB,
+                data=cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            )
+
             result = detector.detect(mp_img)
             num_hands = len(result.hand_landmarks) if result.hand_landmarks else 0
+
+            key = cv2.waitKey(1) & 0xFF  # ← captura tecla UMA VEZ
 
             if result.hand_landmarks:
                 for i, hl in enumerate(result.hand_landmarks):
                     pts = landmarks_to_pts(hl, h, w)
                     draw_hand(frame, pts, state["thickness"], state["debug"])
 
-                    # 👇 AQUI (mesmo nível do draw_hand)
-                    if is_hand_open(pts):
-                        texto = "MAO ABERTA"
+                    # DETECÇÃO DE GESTO
+                    texto = prever_letra(pts)
 
-                    elif is_hand_closed(pts):
-                        texto = "MAO FECHADA"
-
-                    elif is_index_up(pts):
-                        texto = "INDICADOR"
-
-                    else:
-                        texto = ""
-
+                    # MOSTRAR TEXTO
                     if texto:
                         x, y = pts[0]
+                        # posição fixa (topo da tela)
+                        # posição no canto superior direito
+                        pos_x = w - 200
+                        pos_y = 80
 
-                        # fundo escuro
-                        cv2.rectangle(frame, (x-5, y-45), (x+200, y-10), (0,0,0), -1)
+                        cv2.rectangle(frame, (pos_x-10, pos_y-40), (pos_x+150, pos_y+10), (0,0,0), -1)
 
-                        # texto
-                        cv2.putText(frame, texto, (x, y - 20),
-                                    cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0,255,0), 2)
-                        
+                        cv2.putText(frame, texto, (pos_x, pos_y),
+                                    cv2.FONT_HERSHEY_SIMPLEX, 1.5, (0,255,0), 3)
 
+                    # LABEL (Left/Right)
                     if result.handedness and i < len(result.handedness):
                         cat = result.handedness[i][0]
                         draw_label(frame, pts, f"{cat.display_name} ({cat.score:.0%})")
 
-                    if result.handedness and i < len(result.handedness):
-                        cat = result.handedness[i][0]
-                        draw_label(frame, pts, f"{cat.display_name} ({cat.score:.0%})")
+                    # 🔥 COLETA DE DADOS (AGORA CERTO)
+                    if key == ord("a"):
+                        salvar_dados(pts, "A")
+                        print("Salvou A")
 
+                    elif key == ord("b"):
+                        salvar_dados(pts, "B")
+                        print("Salvou B")
+
+                    elif key == ord("d"):
+                        salvar_dados(pts, "D")
+                        print("Salvou D")
+
+            # FPS + HUD
             now = time.time()
             fps = 1.0 / (now - prev_time + 1e-9)
             prev_time = now
+
             draw_hud(frame, fps, num_hands, state["thickness"], state["debug"])
             cv2.imshow("Hand Tracking", frame)
 
-            if handle_keys(cv2.waitKey(1) & 0xFF, state, frame):
+            # CONTROLES (Q, etc.)
+            if handle_keys(key, state, frame):
                 break
 
 # ══════════════════════════════════════════════
@@ -300,6 +321,16 @@ def is_index_up(pts):
         pts[20][1] > pts[18][1]
     )
 
+# 👇 FUNÇÃO CORRETA
+def prever_letra(pts):
+    entrada = []
+
+    for i in range(21):
+        x, y = pts[i]
+        entrada.extend([x, y])
+
+    pred = model.predict([entrada])
+    return pred[0]
 
 # ══════════════════════════════════════════════
 #  MAIN
